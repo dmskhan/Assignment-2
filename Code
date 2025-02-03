@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
 from scipy.stats import gamma
-from lmfit import minimize, Parameters, report_fit
+from scipy.optimize import minimize
 
 # Read in the data from the GitHub repository
-url = "https://raw.githubusercontent.com/<your-username>/<Assignment-2>/main/AgeAtFlowering.csv"
+url = "https://raw.githubusercontent.com/<dmskhan>/<Assignment-2>/main/AgeAtFlowering.csv"
 dat = pd.read_csv(url)
 
 # Remove rows with missing data
@@ -15,9 +15,7 @@ dat['AGE'] = dat['FL_DAY'] - dat['PDAY']
 
 # Define the negative log likelihood function
 def NLLgamma_pday2(params, y, condition1, condition2, condition3, x1, x2):
-    intercept = params['intercept']
-    b1 = params['b1']
-    est_sd = params['est_sd']
+    intercept, b1, est_sd = params
 
     est_mean = intercept + (b1 * x1)
     shape = est_mean**2 / est_sd**2
@@ -55,19 +53,16 @@ for p in populations:
         else:
             pop = pop[pop['OS_EVEN'] == 1]
 
-        params = Parameters()
-        params.add('intercept', value=30, min=0)
-        params.add('b1', value=0)
-        params.add('est_sd', value=3, min=0)
+        initial_params = [30, 0, 3]
+        bounds = [(0, None), (None, None), (0, None)]
+        result_fit = minimize(NLLgamma_pday2, initial_params, args=(pop['AGE'], pop['DRY_BUDS41'], pop['DRY_BUDS42'], pop['HERB_49'], pop['OFFSPRING'], pop['PDAY']), bounds=bounds)
 
-        result_fit = minimize(NLLgamma_pday2, params, args=(pop['AGE'], pop['DRY_BUDS41'], pop['DRY_BUDS42'], pop['HERB_49'], pop['OFFSPRING'], pop['PDAY']))
-
-        temp['Est'] = [round(result_fit.params['intercept'].value, 2), round(result_fit.params['b1'].value, 2), round(result_fit.params['est_sd'].value, 2)]
-        temp['SE'] = [round(result_fit.params['intercept'].stderr, 2), round(result_fit.params['b1'].stderr, 2), round(result_fit.params['est_sd'].stderr, 2)]
-        
-        ci = result_fit.conf_interval()
-        temp['LCI'] = [round(ci['intercept'][0][1], 2), round(ci['b1'][0][1], 2), round(ci['est_sd'][0][1], 2)]
-        temp['UCI'] = [round(ci['intercept'][1][1], 2), round(ci['b1'][1][1], 2), round(ci['est_sd'][1][1], 2)]
+        est = result_fit.x
+        temp['Est'] = [round(est[0], 2), round(est[1], 2), round(est[2], 2)]
+        # SciPy does not directly provide standard errors and confidence intervals, further steps would be required
+        temp['SE'] = [None, None, None]
+        temp['LCI'] = [None, None, None]
+        temp['UCI'] = [None, None, None]
 
         result = pd.concat([result, temp], ignore_index=True)
 
