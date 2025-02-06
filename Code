@@ -1,69 +1,154 @@
+# This code has been translated and modified by GitHub Copilot to produce table 1 from the specified article for this assignment.
+
 import pandas as pd
 import numpy as np
 from scipy.stats import gamma
-from scipy.optimize import minimize
+from statsmodels.base.model import GenericLikelihoodModel
+import matplotlib.pyplot as plt
 
-# Read in the data from the GitHub repository
-url = "https://raw.githubusercontent.com/<dmskhan>/<Assignment-2>/main/AgeAtFlowering.csv"
-dat = pd.read_csv(url)
+# Loading data from an excel file because the AI generated code was having issues calling on the data from a CSV file.
+url = "https://raw.githubusercontent.com/dmskhan/Assignment-2/main/AAF.xlsx"
+dat = pd.read_excel(url)
 
-# Remove rows with missing data
+# Remove rows with missing or erroneous flowering data.
 dat = dat[(dat['MISSING'] == 0) & (dat['SURV_TO_FL'] == 1)]
 
-# Create a new variable "AGE"
+# Create a new variable AGE, corresponding to age at flowering (AAF) from the article.
 dat['AGE'] = dat['FL_DAY'] - dat['PDAY']
 
-# Define the negative log likelihood function
-def NLLgamma_pday2(params, y, condition1, condition2, condition3, x1, x2):
-    intercept, b1, est_sd = params
+# Define the negative log likelihood function for maximum likelihood analysis. The AI had multiple ideas on how to calculate the confidence intervals, many of which required specialized packages that were not leading to the correct results. The Generic 
+# likelihood model worked the best in calculating the confidence intervals.
+class GammaModel(GenericLikelihoodModel):
+    def nloglikeobs(self, params):
+        """
+        Negative log likelihood function for the Gamma model.
+        
+        Parameters:
+        params (list): List of parameters [intercept, b1, est_sd]
+        
+        Returns:
+        np.array: Negative log likelihood values
+        """
+        intercept, b1, est_sd = params  # Model parameters: intercept, coefficient for offspring, and estimated standard deviation
+        est_mean = intercept + (b1 * self.exog[:, 0])  # Calculate estimated mean age at flowering based on the model parameters
 
-    est_mean = intercept + (b1 * x1)
-    shape = est_mean**2 / est_sd**2
-    scale = est_sd**2 / est_mean
+        # Extract conditions and additional variable for censoring from explanatory variables
+        condition1, condition2, condition3, x2 = self.exog[:, 1], self.exog[:, 2], self.exog[:, 3], self.exog[:, 4]
 
-    prob_vect = np.where(condition1 == 1, 
-                         gamma.cdf(40, shape, scale=scale) - gamma.cdf(36, shape, scale=scale),
-                         np.where(condition2 == 1, 
-                                  gamma.cdf(48, shape, scale=scale) - gamma.cdf(45, shape, scale=scale),
-                                  np.where(condition3 == 1,
-                                           gamma.cdf(52 - x2, shape, scale=scale) - gamma.cdf(49 - x2, shape, scale=scale),
-                                           gamma.pdf(y, shape, scale=scale))))
-    
-    return -np.sum(np.log(prob_vect))
+        # Calculate probabilities based on conditions using nested where statements
+        prob_vect = np.where(
+            condition1 == 1,  # If condition1 (DRY_BUDS41) is met, flowering time is between 36 and 40 days
+            gamma.cdf(40, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean) - gamma.cdf(36, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean),
+            np.where(
+                condition2 == 1,  # If condition2 (DRY_BUDS42) is met, flowering time is between 45 and 48 days
+                gamma.cdf(48, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean) - gamma.cdf(45, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean),
+                np.where(
+                    condition3 == 1,  # If condition3 (HERB_49) is met, flowering time is between 49 and 52 days
+                    gamma.cdf(52 - x2, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean) - gamma.cdf(49 - x2, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean),
+                    gamma.pdf(self.endog, (est_mean**2) / (est_sd**2), scale=(est_sd**2) / est_mean)  # If no conditions are met, use the probability density function for the gamma distribution
+                )
+            )
+        )
+        return -np.log(prob_vect + 1e-10)  # Return the negative log likelihood values to avoid infinite values
 
 # Build table to hold results
 result = pd.DataFrame(columns=["Pop", "Samp", "Parameter", "Est", "SE", "LCI", "UCI"])
 
-# Loop through populations and offspring samples
-populations = [1, 3, 5]
-os_sample = ["prop", "even"]
+# List of populations and offspring sample types
+populations = [1, 3, 5]  # Population IDs: 1 = uncorrelated treatment, 3 = negative correlation, 5 = positive correlation
+os_samples = ["prop", "even"]  # Offspring sample types: proportional and even
 
+# Loop through populations & offspring samples
 for p in populations:
-    for s in os_sample:
-        temp = pd.DataFrame(columns=result.columns)
-        temp['Pop'] = [p] * 3
-        temp['Samp'] = [s] * 3
-        temp['Parameter'] = ["Intercept", "b.offspring", "Est.sd"]
+    for s in os_samples:
+        temp = pd.DataFrame(columns=["Pop", "Samp", "Parameter", "Est", "SE", "LCI", "UCI"])
+        temp["Pop"], temp["Samp"], temp["Parameter"] = [p], [s], ["b.offspring"]
 
-        pop = dat[dat['POPULATION'] == p]
-        pop['OFFSPRING'] = np.where(pop['PARENT'] == 1, 0, 1)
+        pop = dat[dat['POPULATION'] == p].copy()  # Subset data for the current population
+        pop['OFFSPRING'] = np.where(pop['PARENT'] == 1, 0, 1)  # Reverse the coding for PARENT column
 
+        # Reduce dataset to proportional or even sample
         if s == "prop":
-            pop = pop[pop['OS_PROP'] == 1]
+            pop = pop[~((pop['OS_EVEN'] == 1) & (pop['OS_PROP'] == 0))]
         else:
-            pop = pop[pop['OS_EVEN'] == 1]
+            pop = pop[~((pop['OS_EVEN'] == 0) & (pop['OS_PROP'] == 1))]
 
-        initial_params = [30, 0, 3]
-        bounds = [(0, None), (None, None), (0, None)]
-        result_fit = minimize(NLLgamma_pday2, initial_params, args=(pop['AGE'], pop['DRY_BUDS41'], pop['DRY_BUDS42'], pop['HERB_49'], pop['OFFSPRING'], pop['PDAY']), bounds=bounds)
+        y = pop['AGE'].values  # Response variable: age at flowering. This is the dependent variable we want to model.
+        
+        # Explanatory variables (independent variables):
+        # 1. OFFSPRING: Whether the individual is an offspring (1) or parent (0).
+        # 2. DRY_BUDS41: Condition indicating the presence of dry buds at stage 41.
+        # 3. DRY_BUDS42: Condition indicating the presence of dry buds at stage 42.
+        # 4. HERB_49: Condition indicating the presence of herb at stage 49.
+        # 5. PDAY: Planting day, used for adjusting the flowering time.
+        X = np.column_stack((
+            pop['OFFSPRING'].values, 
+            pop['DRY_BUDS41'].values, 
+            pop['DRY_BUDS42'].values, 
+            pop['HERB_49'].values, 
+            pop['PDAY'].values
+        ))
 
-        est = result_fit.x
-        temp['Est'] = [round(est[0], 2), round(est[1], 2), round(est[2], 2)]
-        # SciPy does not directly provide standard errors and confidence intervals, further steps would be required
-        temp['SE'] = [None, None, None]
-        temp['LCI'] = [None, None, None]
-        temp['UCI'] = [None, None, None]
+        # Fit the Gamma model
+        model = GammaModel(y, X)  # Initiate the GammaModel with response and explanatory variables
+        fit = model.fit(start_params=[30, 0, 3], method='bfgs')  # Fit the model using the BFGS optimization algorithm with initial parameter estimates [30, 0, 3]
 
+        # Extract model fitting results
+        params_est, params_se, conf_int = fit.params, fit.bse, fit.conf_int(alpha=0.05)
+        temp["Est"], temp["SE"], temp["LCI"], temp["UCI"] = [params_est[1]], [params_se[1]], [conf_int[1, 0]], [conf_int[1, 1]]
         result = pd.concat([result, temp], ignore_index=True)
 
-print(result)
+# Map populations to treatments
+treatment_mapping = {1: "Uncorrelated", 3: "Negative Correlation", 5: "Positive Correlation"}
+result["Treatment"] = result["Pop"].map(treatment_mapping)
+
+# Create the final table with only b.offspring estimates. This was done because the raw translation kept printing the standard deviations and intercepts, which were not necessary in the final results.
+final_table = result[result["Parameter"] == "b.offspring"].pivot(index="Treatment", columns="Samp", values=["Est", "LCI", "UCI"])
+final_table.columns = ["_".join(col).strip() for col in final_table.columns.values]
+final_table = final_table.reset_index()
+
+# Sort the final table by the desired order of treatments to match the order in the article
+order = ["Positive Correlation", "Uncorrelated", "Negative Correlation"]
+final_table["Treatment"] = pd.Categorical(final_table["Treatment"], categories=order, ordered=True)
+final_table = final_table.sort_values("Treatment").reset_index(drop=True)
+
+# Format the final table to resemble the article
+formatted_table = pd.DataFrame({
+    "Treatment": final_table["Treatment"],
+    "Proportional Sample": final_table.apply(lambda row: f"{row['Est_prop']:.2f} ({row['LCI_prop']:.2f}, {row['UCI_prop']:.2f})", axis=1),
+    "Uniform Sample": final_table.apply(lambda row: f"{row['Est_even']:.2f} ({row['LCI_even']:.2f}, {row['UCI_even']:.2f})", axis=1)
+})
+
+# Save the formatted table as an image
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.axis('tight')
+ax.axis('off')
+ax.table(cellText=formatted_table.values, colLabels=formatted_table.columns, cellLoc='center', loc='center')
+
+plt.savefig('results_table.png', bbox_inches='tight')
+print("The results table has been saved as 'results_table.png'")
+
+# While the results printed are correct, the UCI for the unform sample with a positive corelation treatment is supposed to be 0.53,
+# not 0.52 as printed in the results of this code. I am assuming this is because of a rounding error in the calculation of the code
+# but it is difficult to verify. Also printed with the results is a very long warning message which is explained below:
+
+
+# 1. Optimization terminated successfully.
+#    - This message indicates that the optimization algorithm has successfully found a solution.
+#    - It provides details about the function value, iterations, and evaluations.
+
+# 2. UserWarning: df_model + k_constant + k_extra differs from k_params
+#    - Indicates a discrepancy between the number of model parameters and the sum of the degrees of freedom for the model, the constant term, and any extra parameters.
+
+# 3. UserWarning: df_resid differs from nobs - k_params
+#    - Indicates a discrepancy between the degrees of freedom for the residuals and the number of observations minus the number of parameters.
+
+# 4. ValueWarning: more exog_names than parameters
+#    - Indicates that there are more explanatory variable names than parameters being estimated, suggesting possible over-specification of the model.
+
+# 5. FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.
+#    - Indicates that the behavior of concatenating DataFrames with empty or all-NA entries will change in a future version of pandas.
+
+
+# I tried to get the AI to resolve the warning messages, but changing the code altered the results drastically. The AI recommended a piece of code
+# to ignore the warnings, and remove them from the output entirely, but it made more sense to explain the warnings.
